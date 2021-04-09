@@ -1161,6 +1161,9 @@ class ApplicationObject:
     def checksum(self):
         return wdr.util.sha512(self._canonical_string())
 
+    def checksumExtraOptions(self):
+        return wdr.util.sha512(self._str_extra_options())
+
 
 class _AppEventConsumer:
     def __init__(self):
@@ -1653,8 +1656,27 @@ def _defaultManifestPath():
 def _isApplicationInstalled(appName):
     return appName in wdr.app.listApplications()
 
+def _applyExtraOptions(mo):
+    for extraOptionName in _extraOptionNamesOrdered:
+        if mo.extras.has_key(extraOptionName):
+            processExtraAppOption(
+                mo, extraOptionName, mo.extras[extraOptionName]
+            )
+
+
+def _storeChecksum(mo, checksum):
+    deployedObject = wdr.config.getid1(
+        '/Deployment:%s/' % mo.name
+    ).deployedObject
+    deployedObject.assure(
+        'Property', {'name': 'wdr.checksum'}, 'properties',
+        value=checksum,
+        description=WDR_CHECKSUM_DESCRIPTION
+    )
+
 
 def _updateApplication(mo, listener):
+    appRedeployed = 0
     deployedObject = wdr.config.getid1(
         '/Deployment:%s/' % mo.name
     ).deployedObject
@@ -1667,40 +1689,57 @@ def _updateApplication(mo, listener):
         deployedChecksum = deployedChecksumProperties[0].value
     else:
         deployedChecksum = ''
-    fileChecksum = wdr.util.generateSHA512(mo.archive)
+    fileChecksum = wdr.util.generateEarChecksum(mo.archive)
     manifestChecksum = mo.checksum()
-    calculatedChecksum = fileChecksum + ';' + manifestChecksum
+    manifestChecksumExtraOptions = mo.checksumExtraOptions()
+    calculatedChecksum = fileChecksum + ';' + manifestChecksum + ';' + manifestChecksumExtraOptions
     if deployedChecksum == calculatedChecksum:
         listener.skippedUpdate(mo.name, mo.archive)
-        return 0
     else:
-        listener.beforeUpdate(mo.name, mo.archive)
-        logger.debug(
-            'application %s will be updated. '
-            'deployedChecksum(%s), '
-            'calculatedChecksum(%s)',
-            mo.name, deployedChecksum, calculatedChecksum
-        )
-        action = wdr.app.UpdateApp()
-        for (k, v) in mo.options.items():
-            action[k] = v or None
-        action.contents = mo.archive
-        action(mo.name)
-        deployedObject = wdr.config.getid1(
-            '/Deployment:%s/' % mo.name
-        ).deployedObject
-        deployedObject.assure(
-            'Property', {'name': 'wdr.checksum'}, 'properties',
-            value=calculatedChecksum,
-            description=WDR_CHECKSUM_DESCRIPTION
-        )
-        listener.afterUpdate(mo.name, mo.archive)
-        for extraOptionName in _extraOptionNamesOrdered:
-            if mo.extras.has_key(extraOptionName):
-                processExtraAppOption(
-                    mo, extraOptionName, mo.extras[extraOptionName]
-                )
-        return 1
+        deployedChecksums = deployedChecksum.split(';')
+        deployedEarChecksum = ''
+        deployedManifestChecksum = ''
+        deployedManifestChecksumExtraOptions = ''
+        if len(deployedChecksums) > 0:
+            deployedEarChecksum = deployedChecksums[0]
+            deployedManifestChecksum = deployedChecksums[1]
+            if len(deployedChecksums) > 2:
+                deployedManifestChecksumExtraOptions = deployedChecksums[2]
+        #Only redeploy if EAR has been modified
+        if deployedEarChecksum != fileChecksum:
+            listener.beforeUpdate(mo.name, mo.archive)
+            logger.debug(
+                'application %s will be updated. '
+                'deployedChecksum(%s), '
+                'calculatedChecksum(%s)',
+                mo.name, deployedChecksum, calculatedChecksum
+            )
+            action = wdr.app.UpdateApp()
+            for (k, v) in mo.options.items():
+                action[k] = v or None
+            action.contents = mo.archive
+            action(mo.name)
+            listener.afterUpdate(mo.name, mo.archive)
+            _applyExtraOptions(mo)
+            appRedeployed = 1
+        else:
+            #No need to redeploy, but updatable and -if needed- extra options should be applied
+            logger.debug(
+                'application %s will be edited. '
+                'deployedChecksum(%s), '
+                'calculatedChecksum(%s)',
+                mo.name, deployedChecksum, calculatedChecksum
+            )
+            action = wdr.app.Edit()
+            for (k, v) in mo.options.items():
+                action[k] = v or None
+            action(mo.name)
+            #Only apply extra options if checksum has been changed
+            if deployedManifestChecksumExtraOptions != manifestChecksumExtraOptions:
+                _applyExtraOptions(mo)
+        #Store calculatedChecksum as property for deployed application
+        _storeChecksum(mo, calculatedChecksum)
+    return appRedeployed
 
 
 def _installApplication(mo, listener):
@@ -1710,25 +1749,13 @@ def _installApplication(mo, listener):
         action[k] = v or None
     action['appname'] = mo.name
     action(mo.archive)
-    fileChecksum = wdr.util.generateSHA512(mo.archive)
+    fileChecksum = wdr.util.generateEarChecksum(mo.archive)
     manifestChecksum = mo.checksum()
-    calculatedChecksum = fileChecksum + ';' + manifestChecksum
-    deployedObject = wdr.config.getid1(
-        '/Deployment:%s/' % mo.name
-    ).deployedObject
-    deployedObject.assure(
-        'Property',
-        {'name': 'wdr.checksum'},
-        'properties',
-        value=calculatedChecksum,
-        description=WDR_CHECKSUM_DESCRIPTION
-    )
+    manifestChecksumExtraOptions = mo.checksumExtraOptions()
+    calculatedChecksum = fileChecksum + ';' + manifestChecksum + ';' + manifestChecksumExtraOptions
+    _storeChecksum(mo, calculatedChecksum)
     listener.afterInstall(mo.name, mo.archive)
-    for extraOptionName in _extraOptionNamesOrdered:
-        if mo.extras.has_key(extraOptionName):
-            processExtraAppOption(
-                mo, extraOptionName, mo.extras[extraOptionName]
-            )
+    _applyExtraOptions(mo)
 
 
 def _add_internal_variables(variables):
