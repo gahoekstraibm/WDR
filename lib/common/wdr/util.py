@@ -10,6 +10,7 @@ import logging
 import string
 import types
 import wdr
+import re
 
 (
     AdminApp, AdminConfig, AdminControl, AdminTask, Help
@@ -236,6 +237,74 @@ def generateSHA512(filename):
     _digestFile(md, filename)
     return _toHex(md.digest())
 
+def generateEarChecksum(filename):
+    md = java.security.MessageDigest.getInstance('SHA512')
+    fis = java.io.BufferedInputStream(java.io.FileInputStream(filename))
+    try:
+        _digestArchiveContents(md, fis)				
+    finally:
+        fis.close()
+    hexDigest = _toHex(md.digest())
+    return hexDigest
+
+def _digestArchiveContents(md, inputStream):
+    zipEntries = {}
+    try:
+        zipIS = java.util.zip.ZipInputStream(inputStream)
+        #First, read the ZIP entries into a dictionary with the ZIP entry path as key and the binary contents as value
+        while 1:
+            entry = zipIS.nextEntry
+            bytes = None
+            if entry is None:
+                break
+            buf = jarray.zeros(1024, 'b')
+            b = 1
+            baos = java.io.ByteArrayOutputStream()
+            while b > 0:
+                b = zipIS.read(buf)
+                if b > 0:
+                    baos.write(buf, 0, b)
+            bytes = baos.toByteArray()		
+            zipEntries[entry.name] = bytes
+            zipIS.closeEntry()
+        #Get the list of ZIP entry keys and sort this list to be resilient to random order of the ZIP entries within the archive
+        zipKeys = zipEntries.keys()
+        zipKeys.sort()
+        for zipKey in zipKeys:
+            bytes = zipEntries[zipKey]
+            #Update the digest with just the path of the ZIP entry (and not stuff like modification timestamps)
+            md.update(zipKey)
+            if zipKey.startswith('META-INF/MANIFEST.MF'):
+                #As Java Manifests may contain timestamps / build numbers, they need special handling.
+                _digestManifestContents(md, java.io.ByteArrayInputStream(bytes))
+            elif zipKey.startswith('META-INF/application.xml'):
+                #As deployment descriptors may have generated ids, they need special handling
+                _digestDeploymentDescriptorContents(md, bytes)
+            elif zipKey.startswith('.flattened-pom.xml'):
+                #May contain timestamp, not relevant for run-time, so skip
+                continue
+            elif zipKey.endswith('.jar') or zipKey.endswith('.war'):
+                #recursively digest JAR/WAR contents
+                _digestArchiveContents(md, java.io.ByteArrayInputStream(bytes))				
+            else:
+                #For other cases, just update the digest with the binary contents of the ZIP entry
+                md.update(bytes)
+    finally:
+        zipIS.close()
+    return md
+
+def _digestManifestContents(md, inputStream):
+    manifest = java.util.jar.Manifest(inputStream)
+    #For now, only digest the Class-Path
+    cp = manifest.getMainAttributes().getValue('Class-Path')
+    if cp:
+        md.update(java.lang.String(cp).getBytes('UTF-8'))
+
+def _digestDeploymentDescriptorContents(md, bytes):
+    content = java.lang.String(bytes, 'UTF-8')
+    #Replace generated ids by something fixed before using it in the checksum
+    replaced = re.sub('id=\"([a-zA-Z]+)_\d{1,16}\"', 'id=\"\g<1>_0000000000\"', content)
+    md.update(java.lang.String(replaced).getBytes('UTF-8'))
 
 def md5(str):
     md = java.security.MessageDigest.getInstance('MD5')
