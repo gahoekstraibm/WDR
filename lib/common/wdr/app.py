@@ -136,7 +136,7 @@ class Edit(AppAction):
     def __call__(self, name):
         options = self.getOptions()
         logger.debug('editing application %s with options %s', name, options)
-        AdminApp.update(name, options)
+        AdminApp.edit(name, options)
 
 
 class View(AppAction):
