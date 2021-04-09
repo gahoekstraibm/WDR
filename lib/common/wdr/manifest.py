@@ -1697,11 +1697,10 @@ def _updateApplication(mo, listener):
         listener.skippedUpdate(mo.name, mo.archive)
     else:
         deployedChecksums = deployedChecksum.split(';')
-        deployedEarChecksum = ''
+        deployedEarChecksum = deployedChecksums[0]
         deployedManifestChecksum = ''
         deployedManifestChecksumExtraOptions = ''
-        if len(deployedChecksums) > 0:
-            deployedEarChecksum = deployedChecksums[0]
+        if len(deployedChecksums) > 1:
             deployedManifestChecksum = deployedChecksums[1]
             if len(deployedChecksums) > 2:
                 deployedManifestChecksumExtraOptions = deployedChecksums[2]
