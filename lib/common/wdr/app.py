@@ -126,7 +126,7 @@ class UpdatePartialapp(AppAction):
         logger.debug(
             'partial updating application %s with options %s', name, options
         )
-        AdminApp.update(name, 'partial', options)
+        AdminApp.update(name, 'partialapp', options)
 
 
 class Edit(AppAction):

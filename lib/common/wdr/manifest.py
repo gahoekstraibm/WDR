@@ -71,7 +71,8 @@ _variablePattern = re.compile(
 _appNamePattern = re.compile(
     r'^'
     r'(?:(?:"(?P<qname>[^"]+)")|(?P<name>\S+))'
-    r'(?:\s+(?:(?:"(?P<qpath>[^"]+)")|(?P<path>.+?)))?'
+    r'(?:\s+(?:(?:"(?P<qpath>[^"]+)")|(?P<path>\S+?)))?'
+    r'(?:\s+(?:(?:"(?P<qpupath>[^"]+)")|(?P<pupath>\S+?)))?'
     r'\s*$')
 _appOptionPattern = re.compile(
     r'^(?P<tabs>(?:\ |\t))'
@@ -82,6 +83,9 @@ _appOptionPattern = re.compile(
 _appOptionValuePattern = re.compile(r'^(?P<tabs>(?:\t\t)|(?:\ \ ))(?P<value>.+?)\s*$')
 WDR_CHECKSUM_DESCRIPTION = (
     'Checksum of deployed EAR file and application manifest'
+)
+WDR_PARTIAL_UPDATE_DESCRIPTION = (
+    'Flag indicating whether partial update is needed'
 )
 
 
@@ -1086,9 +1090,10 @@ class ApplicationDeploymentListener:
         pass
 
 class ApplicationObject:
-    def __init__(self, name, archive):
+    def __init__(self, name, archive, puArchive=None):
         self.name = name
         self.archive = archive
+        self.puArchive = puArchive
         self.options = {}
         self.extras = {}
 
@@ -1207,13 +1212,26 @@ class _AppConsumer(_AppEventConsumer):
         if name is None:
             name = mat.group('qname')
         name = substituteVariables(name, variables)
+        #Parse application archive
         archive = mat.group('path')
         if archive is None:
             archive = mat.group('qpath')
         archive = substituteVariables(archive, variables)
+        #Parse any partial-update archive
+        puArchive = mat.group('pupath')
+        if puArchive is None:
+            puArchive = mat.group('qpupath')
+        puArchive = substituteVariables(puArchive, variables)
+        #Determine absolute archive paths
         dirname = os.path.dirname(os.path.normpath(os.path.abspath(filename)))
         archive = os.path.normpath(os.path.join(dirname, archive))
-        obj = ApplicationObject(name, archive)
+        if puArchive is not None:
+            puArchive = os.path.normpath(os.path.join(dirname, puArchive))
+            #Only set puArchive if valid file
+            if not os.path.isfile(puArchive):
+                puArchive = None
+        
+        obj = ApplicationObject(name, archive, puArchive)
         self.parentList.append(obj)
         return [self, _AppOptionConsumer(obj)]
 
@@ -1675,6 +1693,23 @@ def _storeChecksum(mo, checksum):
     )
 
 
+def _setPuFlag(mo):
+    deployedObject = wdr.config.getid1(
+        '/Deployment:%s/' % mo.name
+    ).deployedObject
+    deployedObject.assure(
+        'Property', {'name': 'wdr.partialUpdate'}, 'properties',
+        value=1,
+        description=WDR_PARTIAL_UPDATE_DESCRIPTION
+    )
+
+def _clearPuFlag(mo):
+    deployedObject = wdr.config.getid1(
+        '/Deployment:%s/ApplicationDeployment:/Property:wdr.partialUpdate' % mo.name
+    )
+    deployedObject.remove()
+
+
 def _updateApplication(mo, listener):
     appRedeployed = 0
     deployedObject = wdr.config.getid1(
@@ -1685,11 +1720,16 @@ def _updateApplication(mo, listener):
         {'name': 'wdr.checksum'},
         'properties'
     )
+    deployedPuFlag = deployedObject.lookup(
+        'Property',
+        {'name': 'wdr.partialUpdate'},
+        'properties'
+    )
     if deployedChecksumProperties:
         deployedChecksum = deployedChecksumProperties[0].value
     else:
         deployedChecksum = ''
-    fileChecksum = wdr.util.generateEarChecksum(mo.archive)
+    fileChecksum = wdr.util.generateEarChecksum(mo.archive, mo.puArchive)
     manifestChecksum = mo.checksum()
     manifestChecksumExtraOptions = mo.checksumExtraOptions()
     calculatedChecksum = fileChecksum + ';' + manifestChecksum + ';' + manifestChecksumExtraOptions
@@ -1718,6 +1758,8 @@ def _updateApplication(mo, listener):
                 action[k] = v or None
             action.contents = mo.archive
             action(mo.name)
+            if mo.puArchive is not None:
+                _setPuFlag(mo)
             listener.afterUpdate(mo.name, mo.archive)
             _applyExtraOptions(mo)
             appRedeployed = 1
@@ -1738,6 +1780,13 @@ def _updateApplication(mo, listener):
                 _applyExtraOptions(mo)
         #Store calculatedChecksum as property for deployed application
         _storeChecksum(mo, calculatedChecksum)
+        #If app has not been redeployed but partial update flag is set, 
+        #do a partial update and clear partial update flag
+    if not appRedeployed and deployedPuFlag:
+        action = wdr.app.UpdatePartialapp()
+        action.contents = mo.puArchive
+        action(mo.name)
+        _clearPuFlag(mo)            
     return appRedeployed
 
 
@@ -1748,11 +1797,13 @@ def _installApplication(mo, listener):
         action[k] = v or None
     action['appname'] = mo.name
     action(mo.archive)
-    fileChecksum = wdr.util.generateEarChecksum(mo.archive)
+    fileChecksum = wdr.util.generateEarChecksum(mo.archive, mo.puArchive)
     manifestChecksum = mo.checksum()
     manifestChecksumExtraOptions = mo.checksumExtraOptions()
     calculatedChecksum = fileChecksum + ';' + manifestChecksum + ';' + manifestChecksumExtraOptions
     _storeChecksum(mo, calculatedChecksum)
+    if mo.puArchive is not None:
+        _setPuFlag(mo)
     listener.afterInstall(mo.name, mo.archive)
     _applyExtraOptions(mo)
 
