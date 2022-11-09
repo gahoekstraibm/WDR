@@ -1720,11 +1720,14 @@ def _updateApplication(mo, listener):
         {'name': 'wdr.checksum'},
         'properties'
     )
-    deployedPuFlag = deployedObject.lookup(
-        'Property',
-        {'name': 'wdr.partialUpdate'},
-        'properties'
-    )
+    deployedPuFlag = None
+    #For EARs with partial update archive, check Partial-update flag
+    if mo.puArchive:
+        deployedPuFlag = deployedObject.lookup(
+            'Property',
+            {'name': 'wdr.partialUpdate'},
+            'properties'
+        )
     if deployedChecksumProperties:
         deployedChecksum = deployedChecksumProperties[0].value
     else:
