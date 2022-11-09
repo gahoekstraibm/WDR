@@ -26,7 +26,7 @@ Copyright (C) 2001-2004 Vinay Sajip. All Rights Reserved.
 To use, simply 'import logging' and log away!
 """
 
-import sys, os, types, time, string, cStringIO
+import sys, os, types, time, string, cStringIO, traceback
 
 try:
     import codecs
@@ -41,8 +41,8 @@ except ImportError:
 
 __author__  = "Vinay Sajip <vinay_sajip@red-dove.com>"
 __status__  = "beta"
-__version__ = "0.4.9.6"
-__date__    = "02 March 2005"
+__version__ = "0.4.9.7"
+__date__    = "07 October 2005"
 
 #---------------------------------------------------------------------------
 #   Miscellaneous module data
@@ -52,7 +52,9 @@ __date__    = "02 March 2005"
 # _srcfile is used when walking the stack to check when we've got the first
 # caller stack frame.
 #
-if string.lower(__file__[-4:]) in ['.pyc', '.pyo']:
+if hasattr(sys, 'frozen'): #support for py2exe
+    _srcfile = "logging%s__init__%s" % (os.sep, __file__[-4:])
+elif string.lower(__file__[-4:]) in ['.pyc', '.pyo']:
     _srcfile = __file__[:-4] + '.py'
 else:
     _srcfile = __file__
@@ -62,7 +64,7 @@ _srcfile = os.path.normcase(_srcfile)
 def currentframe():
     """Return the frame object for the caller's stack frame."""
     try:
-        raise 'catch me'
+        raise Exception
     except:
         return sys.exc_traceback.tb_frame.f_back
 
@@ -241,8 +243,10 @@ class LogRecord:
         self.relativeCreated = (self.created - _startTime) * 1000
         if thread:
             self.thread = thread.get_ident()
+            self.threadName = threading.currentThread().getName()
         else:
             self.thread = None
+            self.threadName = None
         if hasattr(os, 'getpid'):
             self.process = os.getpid()
         else:
@@ -262,10 +266,12 @@ class LogRecord:
         if not hasattr(types, "UnicodeType"): #if no unicode support...
             msg = str(self.msg)
         else:
-            try:
-                msg = str(self.msg)
-            except UnicodeError:
-                msg = self.msg      #Defer encoding till later
+            msg = self.msg
+            if type(msg) not in (types.UnicodeType, types.StringType):
+                try:
+                    msg = str(self.msg)
+                except UnicodeError:
+                    msg = self.msg      #Defer encoding till later
         if self.args:
             msg = msg % self.args
         return msg
@@ -320,6 +326,7 @@ class Formatter:
                         relative to the time the logging module was loaded
                         (typically at application startup time)
     %(thread)d          Thread ID (if available)
+    %(threadName)s      Thread name (if available)
     %(process)d         Process ID (if available)
     %(message)s         The result of record.getMessage(), computed just as
                         the record is emitted
@@ -374,7 +381,6 @@ class Formatter:
         This default implementation just uses
         traceback.print_exception()
         """
-        import traceback
         sio = cStringIO.StringIO()
         traceback.print_exception(ei[0], ei[1], ei[2], None, sio)
         s = sio.getvalue()
@@ -540,6 +546,7 @@ class Filterer:
 #---------------------------------------------------------------------------
 
 _handlers = {}  #repository of handlers (for flushing when shutdown called)
+_handlerList = [] # added to allow handlers to be removed in reverse of order initialized
 
 class Handler(Filterer):
     """
@@ -562,6 +569,7 @@ class Handler(Filterer):
         _acquireLock()
         try:    #unlikely to raise an exception, but you never know...
             _handlers[self] = 1
+            _handlerList.insert(0, self)
         finally:
             _releaseLock()
         self.createLock()
@@ -571,7 +579,7 @@ class Handler(Filterer):
         Acquire a thread lock for serializing access to the underlying I/O.
         """
         if thread:
-            self.lock = thread.allocate_lock()
+            self.lock = threading.RLock()
         else:
             self.lock = None
 
@@ -664,6 +672,7 @@ class Handler(Filterer):
         _acquireLock()
         try:    #unlikely to raise an exception, but you never know...
             del _handlers[self]
+            _handlerList.remove(self)
         finally:
             _releaseLock()
 
@@ -680,7 +689,6 @@ class Handler(Filterer):
         The record which was being processed is passed in to this method.
         """
         if raiseExceptions:
-            import traceback
             ei = sys.exc_info()
             traceback.print_exception(ei[0], ei[1], ei[2], None, sys.stderr)
             del ei
@@ -730,6 +738,8 @@ class StreamHandler(Handler):
                 except UnicodeError:
                     self.stream.write(fs % msg.encode("UTF-8"))
             self.flush()
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except:
             self.handleError(record)
 
@@ -775,14 +785,17 @@ class PlaceHolder:
         """
         Initialize with the specified logger being a child of this placeholder.
         """
-        self.loggers = [alogger]
+        #self.loggers = [alogger]
+        self.loggerMap = { alogger : None }
 
     def append(self, alogger):
         """
         Add the specified logger as a child of this placeholder.
         """
-        if alogger not in self.loggers:
-            self.loggers.append(alogger)
+        #if alogger not in self.loggers:
+        if not self.loggerMap.has_key(alogger):
+            #self.loggers.append(alogger)
+            self.loggerMap[alogger] = None
 
 #
 #   Determine which class to use when instantiating loggers.
@@ -884,7 +897,8 @@ class Manager:
         Ensure that children of the placeholder ph are connected to the
         specified logger.
         """
-        for c in ph.loggers:
+        #for c in ph.loggers:
+        for c in ph.loggerMap.keys():
             if string.find(c.parent.name, alogger.name) <> 0:
                 alogger.parent = c.parent
                 c.parent = alogger
@@ -1031,13 +1045,16 @@ class Logger(Filterer):
         file name, line number and function name.
         """
         f = currentframe().f_back
-        while 1:
+        rv = "(unknown file)", 0, "(unknown function)"
+        while hasattr(f, "f_code"):
             co = f.f_code
             filename = os.path.normcase(co.co_filename)
             if filename == _srcfile:
                 f = f.f_back
                 continue
-            return filename, f.f_lineno, co.co_name
+            rv = (filename, f.f_lineno, co.co_name)
+            break
+        return rv
 
     def makeRecord(self, name, level, fn, lno, msg, args, exc_info):
         """
@@ -1084,7 +1101,11 @@ class Logger(Filterer):
         """
         if hdlr in self.handlers:
             #hdlr.close()
-            self.handlers.remove(hdlr)
+            hdlr.acquire()
+            try:
+                self.handlers.remove(hdlr)
+            finally:
+                hdlr.release()
 
     def callHandlers(self, record):
         """
@@ -1107,7 +1128,7 @@ class Logger(Filterer):
                 c = None    #break out
             else:
                 c = c.parent
-        if (found == 0) and not self.manager.emittedNoHandlerWarning:
+        if (found == 0) and raiseExceptions and not self.manager.emittedNoHandlerWarning:
             sys.stderr.write("No handlers could be found for logger"
                              " \"%s\"\n" % self.name)
             self.manager.emittedNoHandlerWarning = 1
@@ -1304,14 +1325,16 @@ def shutdown():
 
     Should be called at application exit.
     """
-    for h in _handlers.keys():
+    for h in _handlerList[:]: # was _handlers.keys():
         #errors might occur, for example, if files are locked
-        #we just ignore them
+        #we just ignore them if raiseExceptions is not set
         try:
             h.flush()
             h.close()
         except:
-            pass
+            if raiseExceptions:
+                raise
+            #else, swallow
 
 #Let's try and shutdown automatically on application exit...
 try:

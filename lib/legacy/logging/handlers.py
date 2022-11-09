@@ -71,6 +71,8 @@ class BaseRotatingHandler(logging.FileHandler):
             if self.shouldRollover(record):
                 self.doRollover()
             logging.FileHandler.emit(self, record)
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except:
             self.handleError(record)
 
@@ -124,7 +126,12 @@ class RotatingFileHandler(BaseRotatingHandler):
             dfn = self.baseFilename + ".1"
             if os.path.exists(dfn):
                 os.remove(dfn)
-            os.rename(self.baseFilename, dfn)
+            try:
+                os.rename(self.baseFilename, dfn)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except:
+                self.handleError(record)
             #print "%s -> %s" % (self.baseFilename, dfn)
         if self.encoding:
             self.stream = codecs.open(self.baseFilename, 'w', self.encoding)
@@ -210,9 +217,12 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
             currentMinute = t[4]
             currentSecond = t[5]
             # r is the number of seconds left between now and midnight
-            r = (24 - currentHour) * 60 * 60 # number of hours in seconds
-            r = r + (59 - currentMinute) * 60 # plus the number of minutes (in secs)
-            r = r + (59 - currentSecond) # plus the number of seconds
+            if (currentMinute == 0) and (currentSecond == 0):
+                r = (24 - currentHour) * 60 * 60 # number of hours in seconds
+            else:
+                r = (23 - currentHour) * 60 * 60
+                r = r + (59 - currentMinute) * 60 # plus the number of minutes (in secs)
+                r = r + (60 - currentSecond) # plus the number of seconds
             self.rolloverAt = currentTime + r
             # If we are rolling over on a certain day, add in the number of days until
             # the next rollover, but offset by 1 since we just calculated the time
@@ -265,7 +275,12 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
         dfn = self.baseFilename + "." + time.strftime(self.suffix, timeTuple)
         if os.path.exists(dfn):
             os.remove(dfn)
-        os.rename(self.baseFilename, dfn)
+        try:
+            os.rename(self.baseFilename, dfn)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            self.handleError(record)
         if self.backupCount > 0:
             # find the oldest log file and delete it
             s = glob.glob(self.baseFilename + ".20*")
@@ -277,7 +292,7 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
             self.stream = codecs.open(self.baseFilename, 'w', self.encoding)
         else:
             self.stream = open(self.baseFilename, 'w')
-        self.rolloverAt = int(time.time()) + self.interval
+        self.rolloverAt = self.rolloverAt + self.interval
 
 class SocketHandler(logging.Handler):
     """
@@ -418,6 +433,8 @@ class SocketHandler(logging.Handler):
         try:
             s = self.makePickle(record)
             self.send(s)
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except:
             self.handleError(record)
 
@@ -585,7 +602,7 @@ class SysLogHandler(logging.Handler):
         except socket.error:
             self.socket.close()
             self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.socket.connect(address)
+            self.socket.connect(address)
 
     # curious: when talking to the unix-domain '/dev/log' socket, a
     #   zero-terminator seems to be required.  this string is placed
@@ -639,6 +656,8 @@ class SysLogHandler(logging.Handler):
                     self.socket.send(msg)
             else:
                 self.socket.sendto(msg, self.address)
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except:
             self.handleError(record)
 
@@ -719,6 +738,8 @@ class SMTPHandler(logging.Handler):
                             formatdate(), msg)
             smtp.sendmail(self.fromaddr, self.toaddrs, msg)
             smtp.quit()
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except:
             self.handleError(record)
 
@@ -804,6 +825,8 @@ class NTEventLogHandler(logging.Handler):
                 type = self.getEventType(record)
                 msg = self.format(record)
                 self._welu.ReportEvent(self.appname, id, cat, type, [msg])
+            except (KeyboardInterrupt, SystemExit):
+                raise
             except:
                 self.handleError(record)
 
@@ -854,7 +877,8 @@ class HTTPHandler(logging.Handler):
         """
         try:
             import httplib, urllib
-            h = httplib.HTTP(self.host)
+            host = self.host
+            h = httplib.HTTP(host)
             url = self.url
             data = urllib.urlencode(self.mapLogRecord(record))
             if self.method == "GET":
@@ -864,12 +888,22 @@ class HTTPHandler(logging.Handler):
                     sep = '?'
                 url = url + "%c%s" % (sep, data)
             h.putrequest(self.method, url)
+            # support multiple hosts on one IP address...
+            # need to strip optional :port from host, if present
+            i = string.find(host, ":")
+            if i >= 0:
+                host = host[:i]
+            h.putheader("Host", host)
             if self.method == "POST":
+                h.putheader("Content-type",
+                            "application/x-www-form-urlencoded")
                 h.putheader("Content-length", str(len(data)))
             h.endheaders()
             if self.method == "POST":
                 h.send(data)
             h.getreply()    #can't do anything with the result
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except:
             self.handleError(record)
 

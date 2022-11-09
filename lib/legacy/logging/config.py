@@ -27,7 +27,7 @@ Copyright (C) 2001-2004 Vinay Sajip. All Rights Reserved.
 To use, simply 'import logging' and log away!
 """
 
-import sys, logging, logging.handlers, string, socket, struct, os
+import sys, logging, logging.handlers, string, socket, struct, os, traceback
 
 try:
     import thread
@@ -195,7 +195,6 @@ def fileConfig(fname, defaults=None):
             for log in existing:
                 root.manager.loggerDict[log].disabled = 1
         except:
-            import traceback
             ei = sys.exc_info()
             traceback.print_exception(ei[0], ei[1], ei[2], None, sys.stderr)
             del ei
@@ -226,9 +225,9 @@ def listen(port=DEFAULT_LOGGING_CONFIG_PORT):
             """
             Handle a request.
 
-            Each request is expected to be a 4-byte length,
-            followed by the config file. Uses fileConfig() to do the
-            grunt work.
+            Each request is expected to be a 4-byte length, packed using
+            struct.pack(">L", n), followed by the config file.
+            Uses fileConfig() to do the grunt work.
             """
             import tempfile
             try:
